@@ -1,0 +1,202 @@
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Literal
+
+from backend.adapters.base import LLMAdapter
+from backend.common.types import LLMRequest, Message
+from backend.config.settings import settings as app_settings
+from backend.core.s02_tools import ToolRegistry
+from backend.core.s04_sub_agents import (
+    AgentDefinitionLoader,
+    SubAgentLifecycle,
+    SubAgentSpawner,
+)
+
+from .bash import create_bash_tool
+from .dispatch_agent import create_dispatch_agent_tool
+from .feishu_notify import create_feishu_notify_tool
+from .file_read import create_read_tool
+from .file_write import create_write_tool
+
+PermissionMode = Literal["readonly", "auto", "full"]
+
+
+def register_builtin_tools(
+    registry: ToolRegistry,
+    workspace: str | None,
+    mode: PermissionMode = "auto",
+    adapter: LLMAdapter | None = None,
+    default_model: str = "",
+    agents_dir: str | None = None,
+    feishu_webhook_url: str | None = None,
+    feishu_secret: str | None = None,
+    youtube_api_key: str | None = None,
+    youtube_proxy_url: str | None = None,
+    twitter_username: str | None = None,
+    twitter_email: str | None = None,
+    twitter_password: str | None = None,
+    twitter_proxy_url: str | None = None,
+    twitter_cookies_file: str | None = None,
+) -> None:
+    """根据权限模式注册不同的工具集。"""
+    tools = [create_read_tool(workspace)] if workspace else []
+
+    if workspace and mode in ("auto", "full"):
+        tools.append(create_write_tool(workspace))
+        tools.append(create_bash_tool(workspace))
+        if adapter is not None:
+            loader = AgentDefinitionLoader(agents_dir)
+            spawner = SubAgentSpawner(adapter, registry, loader, default_model)
+            lifecycle = SubAgentLifecycle(timeout=120.0)
+            tools.append(create_dispatch_agent_tool(spawner, lifecycle))
+            try:
+                from backend.core.s04_sub_agents import OrchestratorConfig
+
+                from .orchestrate_agents import create_orchestrate_agents_tool
+            except ImportError:
+                pass
+            else:
+                tools.append(
+                    create_orchestrate_agents_tool(
+                        adapter=adapter,
+                        parent_registry=registry,
+                        config=OrchestratorConfig(
+                            workspace=workspace,
+                            default_model=default_model,
+                            agents_dir=agents_dir,
+                        ),
+                    )
+                )
+    resolved_youtube_api_key = youtube_api_key or os.environ.get("YOUTUBE_API_KEY", "")
+    if resolved_youtube_api_key:
+        try:
+            from .youtube_search import create_youtube_search_tool
+
+            resolved_youtube_proxy = youtube_proxy_url or os.environ.get("YOUTUBE_PROXY_URL", "")
+            tools.append(
+                create_youtube_search_tool(
+                    api_key=resolved_youtube_api_key,
+                    proxy_url=resolved_youtube_proxy,
+                )
+            )
+        except ImportError:
+            pass
+    resolved_twitter_username = twitter_username or os.environ.get("TWITTER_USERNAME", "")
+    resolved_twitter_email = twitter_email or os.environ.get("TWITTER_EMAIL", "")
+    resolved_twitter_password = twitter_password or os.environ.get("TWITTER_PASSWORD", "")
+    if (resolved_twitter_username or resolved_twitter_email) and resolved_twitter_password:
+        try:
+            from .x_client import XClientConfig
+            from .x_search import create_x_search_tool
+
+            tools.append(
+                create_x_search_tool(
+                    XClientConfig(
+                        username=resolved_twitter_username,
+                        email=resolved_twitter_email,
+                        password=resolved_twitter_password,
+                        proxy_url=twitter_proxy_url or os.environ.get("TWITTER_PROXY_URL", ""),
+                        cookies_file=twitter_cookies_file
+                        or os.environ.get("TWITTER_COOKIES_FILE", "twitter_cookies.json"),
+                    )
+                )
+            )
+        except ImportError:
+            pass
+
+    feishu_url = feishu_webhook_url or os.environ.get("FEISHU_WEBHOOK_URL", "")
+    resolved_feishu_secret = feishu_secret or os.environ.get("FEISHU_WEBHOOK_SECRET", "")
+    if feishu_url:
+        tools.append(create_feishu_notify_tool(feishu_url, resolved_feishu_secret or None))
+
+    proxy_api_url = os.environ.get("MIHOMO_API_URL", "http://127.0.0.1:9090")
+    proxy_api_secret = os.environ.get("MIHOMO_SECRET", "")
+    try:
+        from .proxy_lifecycle_tools import create_proxy_off_tool, create_proxy_on_tool
+        from .proxy_tools import (
+            create_proxy_chain_tool,
+            create_proxy_optimize_tool,
+            create_proxy_status_tool,
+            create_proxy_switch_tool,
+            create_proxy_test_tool,
+        )
+
+        tools.append(create_proxy_status_tool(proxy_api_url, proxy_api_secret))
+        tools.append(create_proxy_test_tool(proxy_api_url, proxy_api_secret))
+        tools.append(create_proxy_switch_tool(proxy_api_url, proxy_api_secret))
+        mihomo_config_path = app_settings.mihomo_config_path or os.environ.get(
+            "MIHOMO_CONFIG_PATH",
+            "",
+        )
+        if mihomo_config_path:
+            config_dir = Path(mihomo_config_path).resolve().parent
+            custom_nodes_path = str(config_dir / "custom_nodes.yaml")
+            sub_path = app_settings.mihomo_sub_path or os.environ.get(
+                "MIHOMO_SUB_PATH",
+                str(config_dir / "sub_raw.yaml"),
+            )
+            tools.append(
+                create_proxy_optimize_tool(
+                    mihomo_config_path,
+                    proxy_api_url,
+                    proxy_api_secret,
+                )
+            )
+            tools.append(
+                create_proxy_chain_tool(
+                    mihomo_config_path,
+                    proxy_api_url,
+                    proxy_api_secret,
+                    custom_nodes_path=custom_nodes_path,
+                )
+            )
+            try:
+                from .proxy_scheduler_tools import create_proxy_scheduler_tool
+
+                llm_callback = None
+                if adapter is not None and default_model:
+                    async def _llm_call(prompt: str) -> str:
+                        response = await adapter.complete(
+                            LLMRequest(
+                                model=default_model,
+                                messages=[Message(role="user", content=prompt)],
+                            )
+                        )
+                        return response.content if response else ""
+                    llm_callback = _llm_call
+                tools.append(
+                    create_proxy_scheduler_tool(
+                        api_url=proxy_api_url,
+                        api_secret=proxy_api_secret,
+                        config_path=mihomo_config_path,
+                        custom_nodes_path=custom_nodes_path,
+                        llm_callback=llm_callback,
+                    )
+                )
+            except ImportError:
+                pass
+        mihomo_path = app_settings.mihomo_path or os.environ.get("MIHOMO_PATH", "")
+        if mihomo_path and mihomo_config_path:
+            config_dir = Path(mihomo_config_path).resolve().parent
+            tools.append(
+                create_proxy_on_tool(
+                    mihomo_path=mihomo_path,
+                    config_path=mihomo_config_path,
+                    work_dir=app_settings.mihomo_work_dir
+                    or os.environ.get("MIHOMO_WORK_DIR", "")
+                    or str(config_dir),
+                    sub_path=sub_path,
+                    custom_nodes_path=str(config_dir / "custom_nodes.yaml"),
+                    api_url=proxy_api_url,
+                    secret=proxy_api_secret,
+                )
+            )
+            tools.append(create_proxy_off_tool())
+    except ImportError:
+        pass
+
+    for definition, executor in tools:
+        registry.register(definition, executor)
+__all__ = ["register_builtin_tools", "PermissionMode"]
