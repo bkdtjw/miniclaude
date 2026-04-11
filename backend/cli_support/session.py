@@ -11,6 +11,7 @@ from backend.core.s01_agent_loop import AgentLoop
 from backend.core.s02_tools import ToolRegistry
 from backend.core.s02_tools.builtin import register_builtin_tools
 from backend.core.s02_tools.mcp import MCPServerManager, MCPToolBridge
+from backend.core.s07_task_system import TaskRuntimeDeps, TaskTooling, create_task_tooling
 from backend.core.system_prompt import build_system_prompt
 
 from .models import CliArgs, CliError, CliSession, CliState, SessionUpdate
@@ -61,12 +62,21 @@ async def create_session(
     manager: ProviderManager | None = None,
     mcp_manager: MCPServerManager | None = None,
     event_handler: AgentEventHandler | None = None,
+    task_tooling: TaskTooling | None = None,
 ) -> CliSession:
     try:
         provider_manager = manager or ProviderManager()
         resolved_mcp_manager = mcp_manager or MCPServerManager(config_path=args.mcp_config)
         workspace = _resolve_workspace(args.workspace)
         provider = await _resolve_provider(provider_manager, args.provider)
+        base_task_tooling = task_tooling or create_task_tooling(
+            TaskRuntimeDeps(
+                provider_manager=provider_manager,
+                mcp_manager=resolved_mcp_manager,
+                settings=settings,
+            )
+        )
+        await base_task_tooling.scheduler.start()
         adapter = await provider_manager.get_adapter(provider.id)
         registry = _build_registry(
             CliState(
@@ -92,8 +102,14 @@ async def create_session(
             twitter_password=settings.twitter_password or None,
             twitter_proxy_url=settings.twitter_proxy_url or None,
             twitter_cookies_file=settings.twitter_cookies_file or None,
+            task_tooling=base_task_tooling.with_context(
+                workspace=workspace,
+                provider_id=provider.id,
+                model=args.model or provider.default_model,
+            ),
         )
-        await MCPToolBridge(resolved_mcp_manager, registry).sync_all()
+        bridge = MCPToolBridge(resolved_mcp_manager, registry)
+        await bridge.sync_all()
         loop = AgentLoop(
             config=AgentConfig(
                 model=args.model or provider.default_model,
@@ -108,6 +124,7 @@ async def create_session(
         return CliSession(
             manager=provider_manager,
             mcp_manager=resolved_mcp_manager,
+            mcp_bridge=bridge,
             loop=loop,
             registry=registry,
             state=CliState(
@@ -119,6 +136,7 @@ async def create_session(
                 permission_mode=args.permission_mode,
             ),
             event_handler=event_handler,
+            task_tooling=base_task_tooling,
         )
     except (CliError, LLMError):
         raise
@@ -138,6 +156,7 @@ async def rebuild_session(session: CliSession, update: SessionUpdate) -> CliSess
             manager=session.manager,
             mcp_manager=session.mcp_manager,
             event_handler=session.event_handler,
+            task_tooling=session.task_tooling,
         )
         if update.preserve_history and session.loop.messages:
             rebuilt.loop._messages = _clone_messages(  # noqa: SLF001
@@ -167,6 +186,8 @@ async def run_request(session: CliSession, user_input: str) -> None:
     try:
         signal.signal(signal.SIGINT, _handle_sigint)
         try:
+            if session.mcp_bridge is not None and session.mcp_bridge.needs_sync():
+                await session.mcp_bridge.sync_if_needed()
             await session.loop.run(user_input)
         except AgentError as exc:
             if interrupted and exc.code == "LOOP_ABORTED":

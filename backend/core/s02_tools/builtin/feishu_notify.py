@@ -9,6 +9,7 @@ from typing import Any
 
 import httpx
 
+from backend.common.feishu import truncate_feishu_text
 from backend.common.types import ToolDefinition, ToolExecuteFn, ToolParameterSchema, ToolResult
 
 REQUEST_TIMEOUT_SECONDS = 10.0
@@ -48,7 +49,7 @@ def create_feishu_notify_tool(
 
     async def execute(args: dict[str, Any]) -> ToolResult:
         try:
-            content = str(args.get("content", "")).strip()
+            content = truncate_feishu_text(str(args.get("content", "")).strip())
             if not content:
                 return ToolResult(output="content cannot be empty", is_error=True)
             if not resolved_url:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from backend.adapters.base import LLMAdapter
 from backend.common.types import LLMRequest, Message
@@ -19,6 +19,9 @@ from .dispatch_agent import create_dispatch_agent_tool
 from .feishu_notify import create_feishu_notify_tool
 from .file_read import create_read_tool
 from .file_write import create_write_tool
+
+if TYPE_CHECKING:
+    from backend.core.s07_task_system import TaskTooling
 
 PermissionMode = Literal["readonly", "auto", "full"]
 
@@ -39,6 +42,7 @@ def register_builtin_tools(
     twitter_password: str | None = None,
     twitter_proxy_url: str | None = None,
     twitter_cookies_file: str | None = None,
+    task_tooling: TaskTooling | None = None,
 ) -> None:
     """根据权限模式注册不同的工具集。"""
     tools = [create_read_tool(workspace)] if workspace else []
@@ -196,6 +200,11 @@ def register_builtin_tools(
             tools.append(create_proxy_off_tool())
     except ImportError:
         pass
+
+    if task_tooling is not None:
+        from .task_scheduler import create_task_tools
+
+        tools.extend(create_task_tools(task_tooling))
 
     for definition, executor in tools:
         registry.register(definition, executor)

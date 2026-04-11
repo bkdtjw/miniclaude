@@ -9,6 +9,7 @@ from backend.common.errors import AgentError, LLMError
 
 
 async def main(argv: Sequence[str] | None = None) -> None:
+    session = None
     try:
         args = parse_args(argv)
         printer = CliPrinter()
@@ -18,6 +19,9 @@ async def main(argv: Sequence[str] | None = None) -> None:
         raise
     except Exception as exc:
         raise CliError("CLI_MAIN_ERROR", str(exc)) from exc
+    finally:
+        if session is not None and session.task_tooling is not None:
+            await session.task_tooling.scheduler.stop()
 
 
 def cli_entry() -> None:

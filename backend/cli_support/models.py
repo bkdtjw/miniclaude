@@ -7,9 +7,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from backend.adapters.provider_manager import ProviderManager
 from backend.common.errors import AgentError
 from backend.common.types import AgentEventHandler
-from backend.core.s02_tools.mcp import MCPServerManager
 from backend.core.s01_agent_loop import AgentLoop
 from backend.core.s02_tools import ToolRegistry
+from backend.core.s02_tools.mcp import MCPServerManager, MCPToolBridge
+from backend.core.s07_task_system import TaskTooling
 
 PermissionMode = Literal["readonly", "auto", "full"]
 
@@ -55,10 +56,12 @@ class CliSession(BaseModel):
 
     manager: ProviderManager
     mcp_manager: MCPServerManager | None = None
+    mcp_bridge: MCPToolBridge | None = None
     loop: AgentLoop
     registry: ToolRegistry
     state: CliState
     event_handler: AgentEventHandler | None = None
+    task_tooling: TaskTooling | None = None
 
 
 class CliCommandResult(BaseModel):

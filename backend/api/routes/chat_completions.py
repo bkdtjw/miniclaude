@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 from time import time
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from backend.api.routes.mcp import mcp_server_manager
@@ -71,7 +71,7 @@ def _internal_message_to_openai(message: Message, model: str) -> ChatCompletionR
 
 
 @router.post("/v1/chat/completions", response_model=None)
-async def chat_completions(request: ChatCompletionRequest) -> Any:
+async def chat_completions(request: ChatCompletionRequest, http_request: Request) -> Any:
     try:
         internal = _openai_messages_to_internal(request.messages)
         user_idx = max((i for i, msg in enumerate(internal) if msg.role == "user"), default=-1)
@@ -94,6 +94,15 @@ async def chat_completions(request: ChatCompletionRequest) -> Any:
             twitter_password=app_settings.twitter_password or None,
             twitter_proxy_url=app_settings.twitter_proxy_url or None,
             twitter_cookies_file=app_settings.twitter_cookies_file or None,
+            task_tooling=(
+                getattr(http_request.app.state, "task_tooling", None).with_context(
+                    workspace=request.workspace or "",
+                    provider_id=request.provider_id or "",
+                    model=request.model,
+                )
+                if getattr(http_request.app.state, "task_tooling", None) is not None
+                else None
+            ),
         )
         await MCPToolBridge(mcp_server_manager, registry).sync_all()
         loop = AgentLoop(config=AgentConfig(model=request.model, system_prompt=""), adapter=adapter, tool_registry=registry)

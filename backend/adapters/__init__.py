@@ -1,5 +1,6 @@
 from .anthropic_adapter import AnthropicAdapter
 from .base import LLMAdapter
+from .feishu_client import FeishuClient, FeishuClientConfig, FeishuClientError
 from .factory import AdapterFactory
 from .ollama_adapter import OllamaAdapter
 from .openai_adapter import OpenAICompatAdapter
@@ -10,6 +11,9 @@ __all__ = [
     "AnthropicAdapter",
     "OpenAICompatAdapter",
     "OllamaAdapter",
+    "FeishuClient",
+    "FeishuClientConfig",
+    "FeishuClientError",
     "AdapterFactory",
     "ProviderManager",
 ]
